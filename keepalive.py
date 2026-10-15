@@ -81,8 +81,14 @@ SECURITY_MARKS = ("Quick Verification", "verify you are human", "Just a moment",
                   "Checking your browser", "cf-chl")
 
 
-def _proxies() -> dict:
-    if not PROXY:
+def _proxies(use: bool = False) -> dict:
+    """住宅出口只餵畀 dashboard / Discord 嗰邊。
+
+    面板 API（control.optiklink.net）由機房 IP 直連完全正常（實測 200），
+    而且 requests 用 socks5h:// 一定要有 PySocks，否則會拋 InvalidSchema ——
+    所以呢兩條路徑分開處理，唔好一刀切。
+    """
+    if not use or not PROXY:
         return {}
     return {"http": PROXY, "https": PROXY}
 
@@ -99,7 +105,7 @@ def _headers(extra: dict | None = None) -> dict:
 def _panel_get(path: str, timeout: int = 25):
     return requests.get(f"{PANEL}{path}",
                         headers=_headers({"Authorization": f"Bearer {API_KEY}"}),
-                        timeout=timeout, proxies=_proxies())
+                        timeout=timeout, proxies=_proxies(False))
 
 
 def track_panel(report: RenewReport) -> str:
@@ -174,7 +180,7 @@ def track_panel(report: RenewReport) -> str:
                               headers=_headers({"Authorization": f"Bearer {API_KEY}",
                                                 "Content-Type": "application/json"}),
                               data=json.dumps({"signal": "start"}),
-                              timeout=25, proxies=_proxies())
+                              timeout=25, proxies=_proxies(False))
             if p.status_code in (200, 204):
                 report.add(label, Outcome.RENEWED, detail=f"伺服器原本 {state} → 已發開機指令")
             else:
@@ -216,7 +222,7 @@ def _discord_oauth_location(sess: requests.Session) -> str:
                            "Content-Type": "application/json",
                            "User-Agent": UA},
                   data=json.dumps({"permissions": "0", "authorize": True}),
-                  timeout=25, proxies=_proxies())
+                  timeout=25, proxies=_proxies(True))
     if r.status_code != 200:
         raise RuntimeError(f"Discord 授權 HTTP {r.status_code}（token 失效／被風控／要 2FA）")
     loc = (r.json() or {}).get("location")
@@ -249,7 +255,7 @@ def track_dashboard(report: RenewReport) -> None:
     for cb in candidates:
         try:
             c = sess.get(cb, headers={"User-Agent": UA}, timeout=30,
-                         allow_redirects=True, proxies=_proxies())
+                         allow_redirects=True, proxies=_proxies(True))
             last = f"{c.status_code} {c.url}"
             if _security_page(c.text):
                 report.add("dashboard", Outcome.UNKNOWN,
@@ -263,7 +269,7 @@ def track_dashboard(report: RenewReport) -> None:
 
     try:
         d = sess.get(f"{DASH}/", headers={"User-Agent": UA, "Accept": "text/html"},
-                     timeout=30, allow_redirects=True, proxies=_proxies())
+                     timeout=30, allow_redirects=True, proxies=_proxies(True))
     except Exception as exc:
         report.add("dashboard", Outcome.TRANSIENT,
                    detail=f"攞唔到 dashboard（{type(exc).__name__}）")
@@ -287,10 +293,25 @@ def track_dashboard(report: RenewReport) -> None:
 
 # ────────────────────────────── 主流程 ──────────────────────────────
 
+def _proxy_ready() -> bool:
+    """SOCKS 代理要 PySocks 先得；冇就自動降級直連（唔好因為裝唔到就整個 job 炸）。"""
+    global PROXY
+    if not PROXY:
+        return False
+    try:
+        import socks  # noqa: F401
+        return True
+    except Exception:
+        print("  ⚠️ 有 PROXY_SERVER 但冇 PySocks，降級直連（pip install pysocks 可解）")
+        PROXY = ""
+        return False
+
+
 def main() -> int:
     print("#" * 46)
     print("   OptikLink 保活（面板層 + dashboard 層）")
     print("#" * 46)
+    _proxy_ready()
     print(f"  面板 {PANEL} ｜ dashboard {DASH} ｜ 代理 {'有' if PROXY else '冇'}"
           f" ｜ DRY_RUN={DRY_RUN}")
 
