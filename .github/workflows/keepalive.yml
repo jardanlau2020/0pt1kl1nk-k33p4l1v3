@@ -58,9 +58,14 @@ jobs:
           # 腳本自己發 TG（帶面板連結），唔要 renew-kit 再發一次兜底
           notify-on-failure: "false"
         env:
+          # ── 帳號 01 ── 沿用 2026-10-15 之前嘅通用 secret 名（唔使重貼憑據）
           OPTIKLINK_API_KEY: ${{ secrets.OPTIKLINK_API_KEY }}
           OPTIKLINK_SERVER_ID: ${{ secrets.OPTIKLINK_SERVER_ID }}
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          # ── 帳號 02 ── 新命名（腳本認 {PREFIX}_API_KEY / _SERVER_ID / _DISCORD_TOKEN）
+          OPTIKLINK02_API_KEY: ${{ secrets.OPTIKLINK02_API_KEY }}
+          OPTIKLINK02_SERVER_ID: ${{ secrets.OPTIKLINK02_SERVER_ID }}
+          OPTIKLINK02_DISCORD_TOKEN: ${{ secrets.OPTIKLINK02_DISCORD_TOKEN }}
           SUB_URL: ${{ secrets.SUB_URL }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
