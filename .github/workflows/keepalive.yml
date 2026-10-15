@@ -41,10 +41,19 @@ jobs:
           script: keepalive.py
           python-version: "3.12"
           renewkit-ref: v0.5.3
-          pip-packages: "requests pysocks"  # pysocks = requests 用 socks5h:// 代理必需
+          # pysocks = requests 用 socks5h:// 代理必需；seleniumbase = 過 Quick Verification
+          # （隨機數學題 + 真 Turnstile）要真·有頭瀏覽器 + OS 級滑鼠點擊
+          pip-packages: "requests pysocks seleniumbase"
+          apt-packages: "xvfb x11-utils xdotool scrot fonts-noto-cjk"
           setup-command: |
+            seleniumbase install chromedriver || true
             bash ./setup_proxy.sh || true
           setup-continue-on-error: "true"
+          # 有頭瀏覽器要有虛擬顯示；xvfb-run 包住成支腳本
+          command: 'xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python keepalive.py'
+          artifact-paths: |
+            dashboard_fail.png
+          artifact-name: optiklink-artifacts
           # 腳本自己發 TG（帶面板連結），唔要 renew-kit 再發一次兜底
           notify-on-failure: "false"
         env:

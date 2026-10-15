@@ -44,6 +44,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import urllib.parse
@@ -231,6 +232,27 @@ def _discord_oauth_location(sess: requests.Session) -> str:
     return loc
 
 
+def _browser_verify(cb: str) -> tuple[bool, str]:
+    """交畀有頭瀏覽器（xvfb + SeleniumBase UC）過 Quick Verification。"""
+    env2 = dict(os.environ)
+    env2["OPTIKLINK_CALLBACK"] = cb
+    if PROXY:
+        env2["PROXY_SERVER"] = PROXY
+    try:
+        p = subprocess.run([sys.executable, "browser_verify.py"], env=env2,
+                           capture_output=True, text=True, timeout=900)
+    except Exception as exc:
+        return False, f"瀏覽器步驟起唔到（{type(exc).__name__}）"
+    out = ((p.stdout or "") + (p.stderr or "")).splitlines()
+    for line in out[-25:]:
+        print("   [browser]", line[:200])
+    if p.returncode == 0:
+        return True, "Quick Verification 已過（有頭瀏覽器）· dashboard 已登入"
+    if p.returncode == 3:
+        return False, "瀏覽器環境缺失（seleniumbase / Chrome）"
+    return False, "Quick Verification 未過（Turnstile 令牌或答案被拒）"
+
+
 def track_dashboard(report: RenewReport) -> None:
     """dashboard 層：Discord OAuth 換會話 → 驗登入態。"""
     if not DISCORD_TOKEN:
@@ -252,20 +274,26 @@ def track_dashboard(report: RenewReport) -> None:
         candidates.append(loc.replace("optiklink.com", "optiklink.net"))
 
     last = ""
+    verify_url = ""
     for cb in candidates:
         try:
             c = sess.get(cb, headers={"User-Agent": UA}, timeout=30,
                          allow_redirects=True, proxies=_proxies(True))
             last = f"{c.status_code} {c.url}"
             if _security_page(c.text):
-                report.add("dashboard", Outcome.UNKNOWN,
-                           detail="OAuth 回跳後撞 Quick Verification（數學題 + Turnstile）"
-                                  "—— 需要真瀏覽器／人手撳一下")
-                return
+                # 回跳後站方先出 Quick Verification（隨機數學題 + 真 Turnstile）：
+                # 純 HTTP 造唔出令牌，要交畀有頭瀏覽器（見 browser_verify.py）
+                verify_url = cb
+                break
             if "PHPSESSID" in sess.cookies.get_dict():
                 break
         except Exception as exc:
             last = f"{type(exc).__name__}: {exc}"
+
+    if verify_url:
+        ok, detail = _browser_verify(verify_url)
+        report.add("dashboard", Outcome.RENEWED if ok else Outcome.UNKNOWN, detail=detail)
+        return
 
     try:
         d = sess.get(f"{DASH}/", headers={"User-Agent": UA, "Accept": "text/html"},
