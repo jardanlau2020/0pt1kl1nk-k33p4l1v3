@@ -53,6 +53,7 @@ jobs:
           command: 'xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python keepalive.py'
           artifact-paths: |
             dashboard_fail.png
+            dashboard_fail.html
           artifact-name: optiklink-artifacts
           # 腳本自己發 TG（帶面板連結），唔要 renew-kit 再發一次兜底
           notify-on-failure: "false"

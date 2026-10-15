@@ -125,13 +125,26 @@ def main() -> int:
     print(f"  開 callback: {_mask(CALLBACK)}")
 
     with SB(**kwargs) as sb:
-        sb.uc_open_with_reconnect(CALLBACK, reconnect_time=5.0)
+        print("  [1] 瀏覽器起好，開 callback …", flush=True)
+        try:
+            sb.set_page_load_timeout(180)
+        except Exception:
+            pass
+        try:
+            sb.uc_open_with_reconnect(CALLBACK, reconnect_time=4.0)
+        except Exception as exc:
+            # UC 模式開頁偶爾卡死（住宅代理慢／reconnect 問題）→ 退普通開頁
+            print(f"  ⚠️ uc_open_with_reconnect 失敗（{type(exc).__name__}），改用 sb.open", flush=True)
+            sb.open(CALLBACK)
         time.sleep(3)
+        print(f"  [2] 已到頁：{_mask(sb.get_current_url() or '')}", flush=True)
+        has_math = sb.is_element_present('input[name="math_answer"]')
+        print(f"  [3] 有冇驗證頁（math_answer）：{has_math}", flush=True)
 
         for attempt in range(1, 4):
             if not sb.is_element_present('input[name="math_answer"]'):
                 break
-            print(f"  Quick Verification（第 {attempt} 次）...")
+            print(f"  Quick Verification（第 {attempt} 次）...", flush=True)
             expr = read_math(sb.get_page_source())
             answer = solve_expr(expr)
             print(f"    題目 {expr} = {answer}")
@@ -177,9 +190,15 @@ def main() -> int:
         if is_logged_in(html):
             print("✅ dashboard 已登入（保活完成）")
             return 0
-        print(f"❌ 未見登入態（最終 URL: {_mask(sb.get_current_url() or '')}）")
+        print(f"❌ 未見登入態（最終 URL: {_mask(sb.get_current_url() or '')}）", flush=True)
         try:
             sb.save_screenshot("dashboard_fail.png")
+        except Exception:
+            pass
+        try:
+            with open("dashboard_fail.html", "w", encoding="utf-8") as f:
+                f.write(sb.get_page_source() or "")
+            print("  已寫出 dashboard_fail.html")
         except Exception:
             pass
         return 2

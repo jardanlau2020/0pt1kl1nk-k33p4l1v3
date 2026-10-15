@@ -235,6 +235,7 @@ def _discord_oauth_location(sess: requests.Session) -> str:
 def _browser_verify(cb: str) -> tuple[bool, str]:
     """交畀有頭瀏覽器（xvfb + SeleniumBase UC）過 Quick Verification。"""
     env2 = dict(os.environ)
+    env2["PYTHONUNBUFFERED"] = "1"
     env2["OPTIKLINK_CALLBACK"] = cb
     if PROXY:
         env2["PROXY_SERVER"] = PROXY
@@ -244,8 +245,13 @@ def _browser_verify(cb: str) -> tuple[bool, str]:
     except Exception as exc:
         return False, f"瀏覽器步驟起唔到（{type(exc).__name__}）"
     out = ((p.stdout or "") + (p.stderr or "")).splitlines()
-    for line in out[-25:]:
-        print("   [browser]", line[:200])
+    head, tail = out[:30], out[-30:]
+    for line in head:
+        print("   [browser|頭]", line[:200])
+    if len(out) > 60:
+        print(f"   [browser] …（中間省略 {len(out) - 60} 行）…")
+    for line in tail:
+        print("   [browser|尾]", line[:200])
     if p.returncode == 0:
         return True, "Quick Verification 已過（有頭瀏覽器）· dashboard 已登入"
     if p.returncode == 3:
@@ -291,7 +297,15 @@ def track_dashboard(report: RenewReport) -> None:
             last = f"{type(exc).__name__}: {exc}"
 
     if verify_url:
-        ok, detail = _browser_verify(verify_url)
+        # ⚠️ OAuth code 係一次性：上面 HTTP 嗰次已經用咗，瀏覽器再開同一條 URL
+        # 只會見到錯誤／空白頁（首跑 run 38672674414 就係咁，卡到 chromedriver 120s 逾時）。
+        # 所以重新授權攞一條**新** code 交畀瀏覽器。
+        fresh = verify_url
+        try:
+            fresh = _discord_oauth_location(requests.Session())
+        except Exception as exc:
+            print(f"  ⚠️ 重新授權失敗（{type(exc).__name__}），用返舊 callback 試")
+        ok, detail = _browser_verify(fresh)
         report.add("dashboard", Outcome.RENEWED if ok else Outcome.UNKNOWN, detail=detail)
         return
 
