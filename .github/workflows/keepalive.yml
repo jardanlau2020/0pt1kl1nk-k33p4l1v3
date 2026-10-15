@@ -1,0 +1,57 @@
+name: OptikLink Keepalive
+
+# 2026-10-14 新建。
+# 站方規則（ToS 原文）：免費機要「每 3 日登入一次主 dashboard」，否則伺服器會
+# 變 offline、連續 7 日冇登入就會**直接刪機**；而且明文寫「登入遊戲面板唔算」。
+# 我哋照 **每 2 日**跑一次（留足緩衝）—— UTC 03:00 = 北京 11:00。
+on:
+  schedule:
+    - cron: '0 3 */2 * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "只讀（唔開機、唔提交任何嘢）"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: optiklink-keepalive
+  cancel-in-progress: false
+
+jobs:
+  keepalive:
+    name: OptikLink 保活
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: 檢出代碼
+        uses: actions/checkout@v7
+
+      # 兩軌都跑：
+      #   軌 1 面板層 = Pterodactyl Client API Key（零風險，機房 IP 都通）
+      #   軌 2 dashboard 層 = Discord OAuth（站方真正要求嘅「登入保活」）
+      # setup-command 會先起住宅出口（cfnew 家宽 / mihomo），因為 optiklink.com
+      # 對機房 IP 回 CF 403；起唔到都唔會拖冧 job（continue-on-error + 腳本自己 exit 0）。
+      - name: 執行保活（renew-kit）
+        uses: jardanlau2020/renew-kit/.github/actions/renew@v0.5.3
+        with:
+          script: keepalive.py
+          python-version: "3.12"
+          renewkit-ref: v0.5.3
+          pip-packages: "requests"
+          setup-command: |
+            bash ./setup_proxy.sh || true
+          setup-continue-on-error: "true"
+          # 腳本自己發 TG（帶面板連結），唔要 renew-kit 再發一次兜底
+          notify-on-failure: "false"
+        env:
+          OPTIKLINK_API_KEY: ${{ secrets.OPTIKLINK_API_KEY }}
+          OPTIKLINK_SERVER_ID: ${{ secrets.OPTIKLINK_SERVER_ID }}
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          SUB_URL: ${{ secrets.SUB_URL }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
