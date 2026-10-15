@@ -48,6 +48,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.parse
 
 import requests
@@ -187,7 +188,7 @@ def track_panel(report: RenewReport, acc: dict) -> str:
     row = f"{label} · {name}"
     if state in ("running", "starting"):
         report.add(row, Outcome.SKIPPED,
-                   detail=f"伺服器 {state}（uptime {uptime // 3600}h）· 面板 API 正常（{who}）")
+                   detail=f"伺服器 {state}（uptime {uptime // 3_600_000}h）· 面板 API 正常（{who}）")
     elif DRY_RUN:
         report.add(row, Outcome.SKIPPED, detail=f"伺服器 {state} · DRY_RUN 唔開機")
     elif not AUTOSTART:
@@ -224,23 +225,84 @@ def _security_page(html: str) -> bool:
 
 
 def _discord_oauth_location(dtok: str) -> str:
-    """用該帳號嘅 DISCORD_TOKEN 攞 callback location（含 code）。"""
+    """用該帳號嘅 DISCORD_TOKEN 攞 callback location（含 code）。
+
+    2026-10-15 修正：Discord API **唔應該行住宅代理** —— discord.com 由機房 IP
+    直連冇問題，反而住宅節點係網友共享、隨時掉線（run 38701173992 就係咁死：
+    `SOCKSHTTPSConnectionPool(host='discord.com') Max retries exceeded`）。
+    所以改為**直連優先**，直連失敗才退回代理。
+    """
     url = ("https://discord.com/api/v9/oauth2/authorize"
            f"?client_id={DISCORD_CLIENT_ID}&response_type=code"
            f"&scope={urllib.parse.quote(DISCORD_SCOPE)}"
            f"&redirect_uri={urllib.parse.quote(DISCORD_REDIRECT_URI, safe='')}")
-    r = requests.post(url,
-                      headers={"Authorization": dtok,
-                               "Content-Type": "application/json",
-                               "User-Agent": UA},
-                      data=json.dumps({"permissions": "0", "authorize": True}),
-                      timeout=25, proxies=_proxies(True))
-    if r.status_code != 200:
-        raise RuntimeError(f"Discord 授權 HTTP {r.status_code}（token 失效／被風控／要 2FA）")
-    loc = (r.json() or {}).get("location")
-    if not loc:
-        raise RuntimeError("Discord 冇回 callback location")
-    return loc
+    payload = json.dumps({"permissions": "0", "authorize": True})
+    headers = {"Authorization": dtok, "Content-Type": "application/json", "User-Agent": UA}
+    last = ""
+    for use_proxy in (False, True):
+        if use_proxy and not PROXY:
+            break
+        try:
+            r = requests.post(url, headers=headers, data=payload, timeout=25,
+                              proxies=_proxies(use_proxy))
+        except Exception as exc:
+            last = f"{type(exc).__name__}（{'經代理' if use_proxy else '直連'}）"
+            continue
+        if r.status_code == 200:
+            loc = (r.json() or {}).get("location")
+            if loc:
+                return loc
+            last = "Discord 冇回 callback location"
+            continue
+        if r.status_code in (401, 403):
+            raise RuntimeError(f"Discord 授權 HTTP {r.status_code}"
+                               "（token 失效／被風控／要 2FA）—— 要人手換 token")
+        last = f"HTTP {r.status_code}"
+    raise RuntimeError(f"Discord 授權失敗：{last}")
+
+
+# ── 住宅出口健康檢查 / 換節點（節點係網友共享，掉線係常態）───────────────
+MIHOMO_API = env.get("MIHOMO_API", "http://127.0.0.1:9091")
+
+
+def _proxy_alive(timeout: int = 12) -> bool:
+    if not PROXY:
+        return False
+    try:
+        r = requests.get("https://optiklink.com/", headers={"User-Agent": UA},
+                         timeout=timeout, proxies=_proxies(True), allow_redirects=False)
+        return r.status_code < 500
+    except Exception:
+        return False
+
+
+def _repick_node(tries: int = 8) -> bool:
+    """經 mihomo API 換另一條家宽落地（KR/TH 優先）。"""
+    try:
+        d = requests.get(f"{MIHOMO_API}/proxies", timeout=15).json()["proxies"]
+    except Exception as exc:
+        print(f"  ⚠️ 攞唔到 mihomo 節點清單（{type(exc).__name__}）")
+        return False
+    home = [k for k in d if "家宽" in k]
+    prio = ("KR", "TH", "VN", "TW", "HK", "SG")
+
+    def rank(n):
+        for i, c in enumerate(prio):
+            if c + "-家宽" in n:
+                return i
+        return len(prio)
+
+    for n in sorted(home, key=rank)[:tries]:
+        try:
+            requests.put(f"{MIHOMO_API}/proxies/GLOBAL", json={"name": n}, timeout=15)
+        except Exception:
+            continue
+        time.sleep(3)
+        if _proxy_alive():
+            print(f"  🔄 已換住宅落地：{n}")
+            return True
+    print("  ✗ 換咗幾條節點都唔通 optiklink")
+    return False
 
 
 def _browser_verify(cb: str) -> tuple[bool, str]:
@@ -265,26 +327,28 @@ def _browser_verify(cb: str) -> tuple[bool, str]:
         print("   [browser|尾]", line[:200])
     if p.returncode == 0:
         return True, "Quick Verification 已過（有頭瀏覽器）· dashboard 已登入"
+    if p.returncode == 4:
+        return False, "住宅出口斷線（瀏覽器 ERR_CONNECTION_CLOSED）—— 環境問題，等下次"
     if p.returncode == 3:
         return False, "瀏覽器環境缺失（seleniumbase / Chrome）"
     return False, "Quick Verification 未過（Turnstile 令牌或答案被拒）"
 
 
-def track_dashboard(report: RenewReport, acc: dict) -> None:
-    """dashboard 層：Discord OAuth 換會話 → 有需要就用瀏覽器過 Quick Verification。"""
-    label = acc["label"]
-    row = f"{label} · dashboard"
-    if not acc["dtok"]:
-        report.add(row, Outcome.UNKNOWN,
-                   detail="未配置 DISCORD_TOKEN（路線 A）—— 官方要求嘅登入保活未做")
-        return
+def _dashboard_once(acc: dict) -> tuple[bool, str, bool]:
+    """跑一次 dashboard 保活。回傳 (成功, 說明, 係唔係環境性失敗)。
 
-    sess = requests.Session()
+    環境性失敗（住宅出口斷線、Discord 連唔到）＝transient，唔應該標紅叫人處理；
+    認證性失敗（token 失效、驗證被拒）＝要人手，標紅。
+    """
+    if not acc["dtok"]:
+        return False, "未配置 DISCORD_TOKEN（路線 A）—— 官方要求嘅登入保活未做", False
+
     try:
         loc = _discord_oauth_location(acc["dtok"])
     except Exception as exc:
-        report.add(row, Outcome.FAILED, detail=shorten(str(exc), 110))
-        return
+        msg = str(exc)
+        transient = ("HTTP" not in msg)          # 401/403 係 token 問題，其餘當網絡
+        return False, shorten(msg, 110), transient
 
     # 站方 redirect_uri 寫住 optiklink.com，但 .com 由機房 IP 會被 CF 403（實測）；
     # .net 同一個 app，所以照樣試 .net 版本。
@@ -292,6 +356,7 @@ def track_dashboard(report: RenewReport, acc: dict) -> None:
     if "optiklink.com" in loc:
         candidates.append(loc.replace("optiklink.com", "optiklink.net"))
 
+    sess = requests.Session()
     last = ""
     verify_url = ""
     for cb in candidates:
@@ -309,38 +374,63 @@ def track_dashboard(report: RenewReport, acc: dict) -> None:
 
     if verify_url:
         # ⚠️ OAuth code 係一次性：上面 HTTP 嗰次已經用咗，瀏覽器再開同一條 URL
-        # 只會見到錯誤／空白頁（首跑 run 38672674414 就係咁，卡到 chromedriver 120s 逾時）。
-        # 所以重新授權攞一條**新** code 交畀瀏覽器。
+        # 只會見到錯誤／空白頁（run 38672674414 就係咁卡到 chromedriver 逾時）。
         fresh = verify_url
         try:
             fresh = _discord_oauth_location(acc["dtok"])
         except Exception as exc:
             print(f"  ⚠️ 重新授權失敗（{type(exc).__name__}），用返舊 callback 試")
         ok, detail = _browser_verify(fresh)
-        report.add(row, Outcome.RENEWED if ok else Outcome.UNKNOWN, detail=detail)
-        return
+        transient = "住宅出口斷線" in detail or "環境" in detail
+        return ok, detail, transient
 
     try:
         d = sess.get(f"{DASH}/", headers={"User-Agent": UA, "Accept": "text/html"},
                      timeout=30, allow_redirects=True, proxies=_proxies(True))
     except Exception as exc:
-        report.add(row, Outcome.TRANSIENT, detail=f"攞唔到 dashboard（{type(exc).__name__}）")
-        return
+        return False, f"攞唔到 dashboard（{type(exc).__name__}）", True
 
     if _security_page(d.text):
-        report.add(row, Outcome.UNKNOWN,
-                   detail="dashboard 撞 Quick Verification／CF 挑戰 —— 需要真瀏覽器／人手")
-        return
+        return False, "dashboard 撞 Quick Verification／CF 挑戰 —— 需要真瀏覽器／人手", False
     if _is_logged_in(d.text, str(d.url)):
         user = ""
         m = re.search(r"([A-Za-z0-9_.]{2,32}#\d+)", d.text)
         if m:
             user = f"（{m.group(1)}）"
-        report.add(f"{label} · dashboard{user}", Outcome.RENEWED,
-                   detail=f"Discord OAuth 登入成功，已刷新保活（{now_local()}）")
+        return True, f"Discord OAuth 登入成功，已刷新保活（{now_local()}）{user}", False
+    return False, f"未見登入態（最後跳轉 {shorten(last, 60)}）—— token 可能失效或站方改版", False
+
+
+def track_dashboard(report: RenewReport, acc: dict) -> None:
+    """dashboard 層：Discord OAuth → 有需要就用有頭瀏覽器過 Quick Verification。
+
+    2026-10-15 加：跑之前先驗住宅出口，唔通就換節點；環境性失敗自動再試一次
+    （run 38701173992 兩個帳號都係死喺住宅節點中途掉線）。
+    """
+    label = acc["label"]
+    row = f"{label} · dashboard"
+    if not acc["dtok"]:
+        report.add(row, Outcome.UNKNOWN,
+                   detail="未配置 DISCORD_TOKEN（路線 A）—— 官方要求嘅登入保活未做")
+        return
+
+    if PROXY and not _proxy_alive():
+        print("  ⚠️ 住宅出口唔通 optiklink，先換節點…")
+        _repick_node()
+
+    ok, detail, transient = _dashboard_once(acc)
+    if not ok and transient:
+        print(f"  ↻ 第一次失敗（{detail}）→ 檢查／換住宅節點再試一次")
+        if PROXY and not _proxy_alive():
+            _repick_node()
+        ok, detail, transient = _dashboard_once(acc)
+
+    if ok:
+        report.add(row, Outcome.RENEWED, detail=detail)
+    elif transient:
+        report.add(row, Outcome.TRANSIENT, detail=detail)
     else:
-        report.add(row, Outcome.FAILED,
-                   detail=f"未見登入態（最後跳轉 {shorten(last, 60)}）—— token 可能失效或站方改版")
+        report.add(row, Outcome.FAILED, detail=detail)
 
 
 # ────────────────────────────── 主流程 ──────────────────────────────

@@ -18,7 +18,8 @@ OS 級滑鼠點擊**（SeleniumBase UC 模式嘅 uc_gui_click_captcha）。所�
   OPTIKLINK_DASH       選填，預設 https://optiklink.net
   DRY_RUN=1            只開頁睇有冇驗證頁，唔提交
 
-退出碼：0 = dashboard 已登入；2 = 過唔到驗證／未登入；3 = 環境問題（缺 seleniumbase 等）
+退出碼：0 = dashboard 已登入；2 = 過唔到驗證／未登入；3 = 環境問題（缺 seleniumbase 等）；
+        4 = 網絡／代理問題（住宅出口斷線，例如 ERR_CONNECTION_CLOSED）
 """
 from __future__ import annotations
 
@@ -101,6 +102,18 @@ def set_math(sb, answer: int) -> None:
         raise RuntimeError(f"數學答案填唔入（期望 {want}，實際 {got!r}）")
 
 
+NET_ERROR_MARKS = ("ERR_CONNECTION_CLOSED", "ERR_CONNECTION_RESET", "ERR_CONNECTION_TIMED_OUT",
+                   "ERR_PROXY_CONNECTION_FAILED", "ERR_TUNNEL_CONNECTION_FAILED",
+                   "ERR_NAME_NOT_RESOLVED", "ERR_INTERNET_DISCONNECTED", "ERR_TIMED_OUT",
+                   "This site can’t be reached", "This site can't be reached",
+                   "--error-code-color", "neterror")
+
+
+def is_net_error(html: str) -> bool:
+    """Chrome 內建錯誤頁（住宅節點中途掉線時就係咁：ERR_CONNECTION_CLOSED）。"""
+    return any(m in html for m in NET_ERROR_MARKS)
+
+
 def is_logged_in(html: str) -> bool:
     text = re.sub(r"<script.*?</script>", " ", html, flags=re.S | re.I)
     text = re.sub(r"<[^>]+>", " ", text)
@@ -138,6 +151,9 @@ def main() -> int:
             sb.open(CALLBACK)
         time.sleep(3)
         print(f"  [2] 已到頁：{_mask(sb.get_current_url() or '')}", flush=True)
+        if is_net_error(sb.get_page_source() or ""):
+            print("  ❌ 開 callback 就係網絡錯誤頁（住宅出口斷線）", flush=True)
+            return 4
         has_math = sb.is_element_present('input[name="math_answer"]')
         print(f"  [3] 有冇驗證頁（math_answer）：{has_math}", flush=True)
 
@@ -187,6 +203,13 @@ def main() -> int:
         sb.wait_for_ready_state_complete()
         time.sleep(2)
         html = sb.get_page_source() or ""
+        if is_net_error(html):
+            print("  ❌ dashboard 載入失敗：網絡錯誤頁（住宅出口斷線，唔關登入事）", flush=True)
+            try:
+                sb.save_screenshot("dashboard_fail.png")
+            except Exception:
+                pass
+            return 4
         if is_logged_in(html):
             print("✅ dashboard 已登入（保活完成）")
             return 0
