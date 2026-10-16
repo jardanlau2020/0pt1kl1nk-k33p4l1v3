@@ -25,8 +25,18 @@ curl -sL --max-time 120 -o /tmp/mihomo.gz \
 echo "[proxy] ✅ $(/tmp/mihomo -v 2>&1 | head -1)"
 
 echo "[proxy] 下載訂閱 ..."
-curl -s --max-time 60 -H "user-agent: v2rayNG/1.8.5" "$SUB" -o /tmp/sub.yaml || true
-[ -s /tmp/sub.yaml ] || { echo "[proxy] ✗ 訂閱下載失敗"; exit 0; }
+# 訂閱主機（Cloudflare 前置）偶發下載失敗 → 重試 3 次 + 驗內容似 YAML 訂閱
+SUB_OK=0
+for _try in 1 2 3; do
+  if curl -s --max-time 60 -H "user-agent: v2rayNG/1.8.5" "$SUB" -o /tmp/sub.yaml \
+     && [ -s /tmp/sub.yaml ] \
+     && grep -qE '^(proxies|proxy-groups|mixed-port|mode):' /tmp/sub.yaml; then
+    SUB_OK=1; break
+  fi
+  echo "[proxy] ⚠️ 訂閱下載第 ${_try}/3 次失敗，5 秒後重試"
+  sleep 5
+done
+[ "$SUB_OK" = "1" ] || { echo "[proxy] ✗ 訂閱下載失敗（試 3 次）"; exit 0; }
 
 sed -i 's/^mixed-port: .*/mixed-port: 1080/; s/^external-controller: .*/external-controller: 127.0.0.1:9091/; s/^mode: .*/mode: global/' /tmp/sub.yaml
 
