@@ -334,6 +334,26 @@ def _browser_verify(cb: str) -> tuple[bool, str]:
     return False, "Quick Verification 未過（Turnstile 令牌或答案被拒）"
 
 
+NET_ERROR_SIGNS = (
+    "SSLError", "SOCKSHTTPSConnectionPool", "SOCKSConnectionPool",
+    "ConnectionError", "ProxyError", "Max retries exceeded",
+    "tunnel connection failed", "ERR_CONNECTION", "ERR_SSL",
+    "ERR_PROXY", "ERR_TIMED_OUT", "ERR_TUNNEL", "ERR_NETWORK",
+    "ERR_EMPTY_RESPONSE", "ERR_NAME_NOT_RESOLVED",
+)
+
+
+def _looks_like_net_error(*texts: str) -> bool:
+    """判斷一段文字係唔係網絡層錯誤（住宅出口斷線 / 代理死）。
+
+    2026-10-27 加：run 40473575972 兩個帳號都係住宅節點中途斷線，但 02 嗰條路
+    GET 冇拋 exception（拎到錯誤頁），於是跌到「未見登入態 → token 可能失效」，
+    被標成 🚨 FAILED 叫人處理 —— 其實純環境問題，應該算 TRANSIENT。
+    """
+    blob = " ".join(t or "" for t in texts)
+    return any(sig in blob for sig in NET_ERROR_SIGNS)
+
+
 def _dashboard_once(acc: dict) -> tuple[bool, str, bool]:
     """跑一次 dashboard 保活。回傳 (成功, 說明, 係唔係環境性失敗)。
 
@@ -398,6 +418,11 @@ def _dashboard_once(acc: dict) -> tuple[bool, str, bool]:
         if m:
             user = f"（{m.group(1)}）"
         return True, f"Discord OAuth 登入成功，已刷新保活（{now_local()}）{user}", False
+    # 2026-10-27：先分清楚「網絡層死」同「真係未登入」。
+    # 住宅節點中途斷線時，GET 有時唔拋 exception 而是回錯誤頁／空白頁，
+    # 呢個情況唔應該叫用戶去換 token。
+    if _looks_like_net_error(last, d.text or ""):
+        return False, f"dashboard 讀唔到（網絡層：{shorten(last, 50)}）—— 住宅出口斷線，環境問題", True
     return False, f"未見登入態（最後跳轉 {shorten(last, 60)}）—— token 可能失效或站方改版", False
 
 
@@ -420,8 +445,11 @@ def track_dashboard(report: RenewReport, acc: dict) -> None:
 
     ok, detail, transient = _dashboard_once(acc)
     if not ok and transient:
-        print(f"  ↻ 第一次失敗（{detail}）→ 檢查／換住宅節點再試一次")
-        if PROXY and not _proxy_alive():
+        print(f"  ↻ 第一次失敗（{detail}）→ 換住宅節點再試一次")
+        # 2026-10-27：唔再靠 _proxy_alive() 把關 —— 佢只係打一條純 HTTP 請求，
+        # Chrome 嘅 TLS handshake 死佢一樣會話通（run 40473575972 就係咁：
+        # 出口「HTTP 301 通」，但瀏覽器兩次都係網絡錯誤頁）。環境性失敗一律換。
+        if PROXY:
             _repick_node()
         ok, detail, transient = _dashboard_once(acc)
 
