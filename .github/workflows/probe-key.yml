@@ -1,0 +1,22 @@
+name: Probe Panel Key (one-off)
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: test keys
+        env:
+          OLD: ${{ secrets.OPTIKLINK02_API_KEY }}
+          NEW: ${{ secrets.PROBE_KEY }}
+        run: |
+          set -uo pipefail
+          for pair in "OLD:$OLD" "NEW:$NEW"; do
+            N="${pair%%:*}"; K="${pair#*:}"
+            [ -z "$K" ] && { echo "$N: (empty)"; continue; }
+            echo "── $N  前綴=${K:0:8}  長度=${#K}"
+            for P in /api/client/account /api/client; do
+              C=$(curl -s -o /tmp/o.json -w "%{http_code}" --max-time 20                   -H "Authorization: Bearer $K" -H "Accept: application/json"                   -H "User-Agent: Mozilla/5.0" "https://control.optiklink.net$P")
+              echo "   $P → HTTP $C  $(head -c 120 /tmp/o.json | tr -d '\n')"
+            done
+          done
