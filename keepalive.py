@@ -500,7 +500,9 @@ def main() -> int:
         track_panel(report, acc)
         track_dashboard(report, acc)
 
-    return report.finish(notify_tg=True)
+    # 2026-11-09：上游故障（住宅節點質素浮動）只寫 log，唔發 TG；
+    # 成功與真失敗照樣通知，免得撞到差節點就嘈一次。
+    return report.finish(notify_tg=(report.worst != Outcome.TRANSIENT))
 
 
 def render_tg(report: RenewReport) -> str:
