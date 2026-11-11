@@ -426,6 +426,9 @@ def _dashboard_once(acc: dict) -> tuple[bool, str, bool]:
     return False, f"未見登入態（最後跳轉 {shorten(last, 60)}）—— token 可能失效或站方改版", False
 
 
+_DASH_SEEN: set[str] = set()
+
+
 def track_dashboard(report: RenewReport, acc: dict) -> None:
     """dashboard 層：Discord OAuth → 有需要就用有頭瀏覽器過 Quick Verification。
 
@@ -438,6 +441,14 @@ def track_dashboard(report: RenewReport, acc: dict) -> None:
         report.add(row, Outcome.UNKNOWN,
                    detail="未配置 DISCORD_TOKEN（路線 A）—— 官方要求嘅登入保活未做")
         return
+
+    # 2026-11-11：同一個住宅 IP 連續做兩次 Turnstile，第二次幾乎必被拒
+    # （實測兩個 run 都係一過一死：run 42999406888 01 死／02 過，run 43001071604 相反）。
+    # 故第二個帳號開始，先換一條落地再驗。
+    if PROXY and _DASH_SEEN:
+        print("  🔄 換住宅節點（避免同一 IP 連續驗證）")
+        _repick_node()
+    _DASH_SEEN.add(label)
 
     if PROXY and not _proxy_alive():
         print("  ⚠️ 住宅出口唔通 optiklink，先換節點…")
