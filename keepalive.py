@@ -292,7 +292,16 @@ def _repick_node(tries: int = 8) -> bool:
                 return i
         return len(prio)
 
-    for n in sorted(home, key=rank)[:tries]:
+    # 2026-11-13：原本由頭揀，永遠揀返同一條（KR-家宽-01）⇒「換節點」等於冇換。
+    # 要跳過現用節點，先算真正換 IP。
+    try:
+        cur = (d.get("GLOBAL") or {}).get("now")
+    except Exception:
+        cur = None
+    cand = [n for n in sorted(home, key=rank) if n != cur][:tries]
+    if not cand:
+        cand = sorted(home, key=rank)[:tries]
+    for n in cand:
         try:
             requests.put(f"{MIHOMO_API}/proxies/GLOBAL", json={"name": n}, timeout=15)
         except Exception:
