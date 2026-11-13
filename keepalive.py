@@ -410,7 +410,10 @@ def _dashboard_once(acc: dict) -> tuple[bool, str, bool]:
         except Exception as exc:
             print(f"  ⚠️ 重新授權失敗（{type(exc).__name__}），用返舊 callback 試")
         ok, detail = _browser_verify(fresh)
-        transient = "住宅出口斷線" in detail or "環境" in detail
+        # 2026-11-13：Turnstile 被拒屬節點／CF 層（同一帳號換 3 個節點都時中時唔中），
+        # 唔係憑證問題 ⇒ 當 transient，靜默等下次排程，唔再標紅叫人處理。
+        transient = ("住宅出口斷線" in detail or "環境" in detail
+                     or "Quick Verification 未過" in detail)
         return ok, detail, transient
 
     try:
