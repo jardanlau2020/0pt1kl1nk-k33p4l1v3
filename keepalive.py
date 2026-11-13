@@ -410,10 +410,12 @@ def _dashboard_once(acc: dict) -> tuple[bool, str, bool]:
         except Exception as exc:
             print(f"  ⚠️ 重新授權失敗（{type(exc).__name__}），用返舊 callback 試")
         ok, detail = _browser_verify(fresh)
-        # 2026-11-13：Turnstile 被拒屬節點／CF 層（同一帳號換 3 個節點都時中時唔中），
-        # 唔係憑證問題 ⇒ 當 transient，靜默等下次排程，唔再標紅叫人處理。
-        transient = ("住宅出口斷線" in detail or "環境" in detail
-                     or "Quick Verification 未過" in detail)
+        # 2026-11-13：dashboard 層除「憑證問題」以外，一律當 transient（靜默、下次再試）。
+        # 實測同一帳號換 KR-家宽-01/02/04 都時中時唔中，仲會出現 TimeoutExpired，
+        # 全部屬節點／CF／瀏覽器環境，唔應該叫人處理。
+        _cred_bad = ("401" in detail or "Discord 授權" in detail
+                     or "token 失效" in detail or "API Key 被拒" in detail)
+        transient = not _cred_bad
         return ok, detail, transient
 
     try:
